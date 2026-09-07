@@ -1,0 +1,40 @@
+# Anything that shouldn't end up in the Docker build context.
+# Smaller context = faster builds, less chance of leaking secrets.
+
+# VCS / metadata
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+*.egg-info
+.pytest_cache
+.ruff_cache
+
+# Project files we don't need in the image
+tests/
+k8s/
+scripts/
+docs/
+
+# Docs
+README.md
+LEARNING.md
+.envrc
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
