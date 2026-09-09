@@ -17,7 +17,8 @@ WORKDIR /build
 # In stage 2 we drop these, keeping the final image small.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Create a venv.  Copying a venv between stages is a common pattern for
 # self-contained Python apps because venvs are fully relocatable.
@@ -29,7 +30,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 # whole torch/transformers install on rebuild.
 COPY app/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+ && pip install --no-cache-dir -r requirements.txt \
+ && pip cache purge
 
 # Now copy the app code
 COPY app/ ./app/

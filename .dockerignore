@@ -5,6 +5,7 @@
 .git
 .gitignore
 .gitattributes
+.github
 
 # Python
 __pycache__
@@ -22,6 +23,7 @@ tests/
 k8s/
 scripts/
 docs/
+graphify-out/
 
 # Docs
 README.md
@@ -38,3 +40,4 @@ LEARNING.md
 .idea
 .DS_Store
 Thumbs.db
+.agents

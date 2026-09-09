@@ -11,14 +11,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check runner health
+        run: |
+          echo "=== Runner Health Check ==="
+          echo "Disk space:"
+          df -h
+          echo "Docker system info:"
+          docker system df
+          echo "Docker info:"
+          docker info | head -20
+
       - name: Login to Docker Hub
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Build image
         run: docker build -t rajusocial123/llm-deploy:${{ github.ref_name }} .
 
-      - name: Push image
-        run: docker push rajusocial123/llm-deploy:${{ github.ref_name }}
+      - name: Push image with retry
+        run: |
+          echo "=== Pushing image ==="
+          docker push rajusocial123/llm-deploy:${{ github.ref_name }} || {
+            echo "=== Push failed, Docker system info ==="
+            docker system df
+            echo "=== Network connectivity test ==="
+            ping -c 3 hub.docker.com || echo "Docker Hub unreachable"
+            exit 1
+          }
+        timeout-minutes: 20
 
   deploy:
     needs: build-and-push
