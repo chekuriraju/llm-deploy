@@ -2,57 +2,143 @@ name: CD
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing image tag to deploy (e.g. latest). Empty = build from source."
+        required: false
+        default: ""
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: rajusocial123/llm-deploy
+  K8S_DEPLOYMENT: llm-deploy
+  K8S_CONTAINER: llm-deploy
 
 jobs:
   build-and-push:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.image_tag == ''
     runs-on: self-hosted
+    timeout-minutes: 40
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check runner health
+      - name: Resolve image tag
+        id: meta
+        shell: bash
         run: |
-          echo "=== Runner Health Check ==="
-          echo "Disk space:"
-          df -h
-          echo "Docker system info:"
-          docker system df
-          echo "Docker info:"
-          docker info | head -20
+          set -euo pipefail
+          SHA_SHORT=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="sha-${SHA_SHORT}"
+          fi
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha_short=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "Resolved TAG=${TAG}"
+
+      - name: Check runner health
+        shell: bash
+        run: |
+          set -x
+          df -h || true
+          docker info | head -30
+          docker system df || true
 
       - name: Login to Docker Hub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.DOCKER_USERNAME }}" ] || [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
+            echo "::error::Missing DOCKER_USERNAME / DOCKER_PASSWORD secrets"
+            exit 1
+          fi
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Build image
-        run: docker build -t rajusocial123/llm-deploy:${{ github.ref_name }} .
-
-      - name: Push image with retry
+        shell: bash
         run: |
-          echo "=== Pushing image ==="
-          docker push rajusocial123/llm-deploy:${{ github.ref_name }} || {
-            echo "=== Push failed, Docker system info ==="
-            docker system df
-            echo "=== Network connectivity test ==="
-            ping -c 3 hub.docker.com || echo "Docker Hub unreachable"
-            exit 1
-          }
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.image_tag }}"
+          echo "Building ${{ env.IMAGE_NAME }}:${TAG}"
+          docker pull "${{ env.IMAGE_NAME }}:latest" 2>/dev/null || echo "(no latest cache yet)"
+          docker build --cache-from "${{ env.IMAGE_NAME }}:latest" -t "${{ env.IMAGE_NAME }}:${TAG}" -t "${{ env.IMAGE_NAME }}:latest" .
+          docker images "${{ env.IMAGE_NAME }}" | head -20
+
+      - name: Push image
+        shell: bash
         timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.image_tag }}"
+          docker push "${{ env.IMAGE_NAME }}:${TAG}"
+          docker push "${{ env.IMAGE_NAME }}:latest"
 
   deploy:
     needs: build-and-push
+    if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     runs-on: self-hosted
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update Kubernetes deployment
+      - name: Resolve image to deploy
+        id: target
+        shell: bash
         run: |
-          # Use Docker Desktop's kubectl if available, otherwise system kubectl
-          if command -v kubectl &> /dev/null; then
-            kubectl set image deployment/llm-deploy llm-deploy=rajusocial123/llm-deploy:${{ github.ref_name }}
-            kubectl rollout status deployment/llm-deploy
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.image_tag }}" ]]; then
+            TAG="${{ inputs.image_tag }}"
+          elif [[ -n "${{ needs.build-and-push.outputs.image_tag }}" ]]; then
+            TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
           else
-            # Docker Desktop includes kubectl
-            "/mnt/c/Program Files/Docker/Docker/resources/bin/kubectl.exe" set image deployment/llm-deploy llm-deploy=rajusocial123/llm-deploy:${{ github.ref_name }}
-            "/mnt/c/Program Files/Docker/Docker/resources/bin/kubectl.exe" rollout status deployment/llm-deploy
+            TAG="latest"
           fi
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${{ env.IMAGE_NAME }}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Deploying ${{ env.IMAGE_NAME }}:${TAG}"
+
+      - name: Preflight kubectl
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v kubectl >/dev/null 2>&1 || (echo "::error::kubectl missing. Install k8s CLI; enable Docker Desktop Kubernetes." && exit 1)
+          kubectl version --client=true
+          kubectl config current-context
+          kubectl cluster-info || (echo "::error::Cannot reach cluster. Is Docker Desktop K8s running?" && exit 1)
+          kubectl get nodes
+
+      - name: Apply manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl get deploy/${{ env.K8S_DEPLOYMENT }} -o yaml | grep -A5 "startupProbe" | head -20
+
+      - name: Roll out image
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} ${{ env.K8S_CONTAINER }}=${{ steps.target.outputs.image_ref }}
+          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} --timeout=600s
+
+      - name: Verify rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get pods -l app=llm-deploy -o wide
+          kubectl wait --for=condition=available deployment/${{ env.K8S_DEPLOYMENT }} --timeout=600s
+          kubectl get events --sort-by=.lastTimestamp | grep -i "llm-deploy" | tail -20 || true
+          POD=$(kubectl get pod -l app=llm-deploy -o jsonpath='{.items[0].metadata.name}')
+          kubectl logs "$POD" --tail=30 || true
