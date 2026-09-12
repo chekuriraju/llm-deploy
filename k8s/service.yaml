@@ -6,6 +6,8 @@ metadata:
     app: llm-deploy
 spec:
   type: NodePort
+  # Selects BOTH stable (version: stable) and canary (version: canary) pods
+  # Traffic splits proportionally to replica counts
   selector:
     app: llm-deploy
   ports:

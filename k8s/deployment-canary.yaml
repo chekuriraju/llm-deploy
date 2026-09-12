@@ -1,0 +1,70 @@
+# Canary Deployment for LLM Deploy Demo
+#
+# This deployment runs alongside the stable deployment (k8s/deployment.yaml).
+# Both are selected by the same Service (k8s/service.yaml), enabling traffic
+# splitting via replica counts.
+#
+# Traffic split formula: canary_replicas / (stable_replicas + canary_replicas)
+# Example: stable=3, canary=1 => 25% traffic to canary
+#
+# To promote canary to stable:
+#   1. Update stable deployment image to canary image
+#   2. Scale canary to 0
+#   3. Scale stable to desired replicas
+#
+# To rollback:
+#   1. Scale canary to 0
+#   2. Ensure stable is at desired replicas with known-good image
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-deploy-canary
+  labels:
+    app: llm-deploy
+    version: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-deploy
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: llm-deploy
+        version: canary
+    spec:
+      containers:
+      - name: llm-deploy
+        image: rajusocial123/llm-deploy:canary
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        env:
+        - name: MODEL_VERSION
+          value: "latest"  # Canary loads latest registered version

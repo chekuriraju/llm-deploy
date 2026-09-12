@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.model import MODEL_NAME, generate, get_model
+from app.model import MODEL_NAME, generate, get_model, get_loaded_version
 
 # Standard logging config so we see model-load and access logs in `kubectl logs`.
 logging.basicConfig(
@@ -72,11 +72,13 @@ class GenerateRequest(BaseModel):
 class GenerateResponse(BaseModel):
     response: str
     model: str
+    version: str | None = None
 
 
 class HealthResponse(BaseModel):
     status: str
     model: str
+    version: str | None = None
 
 
 # ---- Endpoints ----
@@ -88,7 +90,7 @@ def health() -> HealthResponse:
     Kubernetes calls this every few seconds. If it returns 200, the pod is
     considered healthy and gets traffic. If it fails, K8s restarts the pod.
     """
-    return HealthResponse(status="ok", model=MODEL_NAME)
+    return HealthResponse(status="ok", model=MODEL_NAME, version=get_loaded_version())
 
 
 @app.post("/generate", response_model=GenerateResponse, tags=["inference"])
@@ -102,7 +104,7 @@ def generate_text(req: GenerateRequest) -> GenerateResponse:
             "prompt=%r max_new_tokens=%d elapsed=%.2fs response=%r",
             req.prompt[:60], req.max_new_tokens, elapsed, output[:60],
         )
-        return GenerateResponse(response=output, model=MODEL_NAME)
+        return GenerateResponse(response=output, model=MODEL_NAME, version=get_loaded_version())
     except Exception as exc:
         logger.exception("Inference failed")
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
