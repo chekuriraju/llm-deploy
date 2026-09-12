@@ -45,12 +45,29 @@ jobs:
           echo "sha_short=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
           echo "Resolved TAG=${TAG}"
 
-      - name: Check runner health
+      - name: Check runner resources before build
         shell: bash
         run: |
           set -x
           df -h || true
-          docker info | head -30
+          docker info | head -30 || true
+          docker system df || true
+          echo "--- disk check (portable, warning only) ---"
+          AVAIL_KB=$(df -k . | tail -1 | awk '{print $4}')
+          echo "Available KB on workdir fs: ${AVAIL_KB} (~$((AVAIL_KB/1024/1024)) GB)"
+          if [ "${AVAIL_KB}" -lt 5242880 ]; then
+            echo "::warning::Low disk (<5GB). Build of torch image may fail; safe cleanup step will run next."
+          fi
+
+      - name: Safe cleanup (preserve K8s + latest cache)
+        shell: bash
+        run: |
+          set -x
+          # Only prune dangling/old stuff. NEVER `prune -af --volumes` on a
+          # self-hosted box: it deletes K8s layers, HF model cache, volumes.
+          docker container prune -f || true
+          docker image prune -f || true
+          docker builder prune -f || true
           docker system df || true
 
       - name: Login to Docker Hub
