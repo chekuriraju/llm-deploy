@@ -50,7 +50,7 @@ jobs:
         run: |
           set -x
           df -h || true
-          docker info | head -30 || true
+          docker info 2>&1 | cat || true
           docker system df || true
           echo "--- disk check (portable, warning only) ---"
           AVAIL_KB=$(df -k . | tail -1 | awk '{print $4}')
@@ -88,7 +88,7 @@ jobs:
           echo "Building ${{ env.IMAGE_NAME }}:${TAG}"
           docker pull "${{ env.IMAGE_NAME }}:latest" 2>/dev/null || echo "(no latest cache yet)"
           docker build --cache-from "${{ env.IMAGE_NAME }}:latest" -t "${{ env.IMAGE_NAME }}:${TAG}" -t "${{ env.IMAGE_NAME }}:latest" .
-          docker images "${{ env.IMAGE_NAME }}" | head -20
+          docker images "${{ env.IMAGE_NAME }}" || true
 
       - name: Push image
         shell: bash
@@ -141,7 +141,7 @@ jobs:
           set -euo pipefail
           kubectl apply -f k8s/service.yaml
           kubectl apply -f k8s/deployment.yaml
-          kubectl get deploy/${{ env.K8S_DEPLOYMENT }} -o yaml | grep -A5 "startupProbe" | head -20
+          kubectl get deploy/${{ env.K8S_DEPLOYMENT }} -o yaml | grep -A5 "startupProbe" || true
 
       - name: Roll out image
         shell: bash
@@ -156,6 +156,6 @@ jobs:
           set -euo pipefail
           kubectl get pods -l app=llm-deploy -o wide
           kubectl wait --for=condition=available deployment/${{ env.K8S_DEPLOYMENT }} --timeout=600s
-          kubectl get events --sort-by=.lastTimestamp | grep -i "llm-deploy" | tail -20 || true
+          kubectl get events --sort-by=.lastTimestamp | grep -i "llm-deploy" || echo "(no llm-deploy events)"
           POD=$(kubectl get pod -l app=llm-deploy -o jsonpath='{.items[0].metadata.name}')
           kubectl logs "$POD" --tail=30 || true
